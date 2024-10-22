@@ -1,0 +1,326 @@
+---
+title: "Infographic Project"
+author: "Rao Abdul Hannan"
+format:
+  pdf:
+    colorlinks: true
+    geometry: "height=9in, width=16in, top=0.5in, bottom=0.5in, left=1in, right=1in"
+echo: true
+---
+
+```{r}
+suppressMessages({
+  library(tidyverse)
+  library(ggthemes)
+  library(forcats)
+  library(ggmap)
+  library(scales)
+  library(patchwork)
+})
+```
+
+
+```{r}
+amazon_purchases <- read.csv("amazon_purchases.csv")
+fields <- read.csv("fields.csv")
+survey = read.csv("survey.csv")
+```
+
+
+```{r}
+amazon_purchases <- merge(amazon_purchases, survey, by = "Survey.ResponseID")
+```
+
+
+```{r}
+amazon_purchases <- amazon_purchases |>
+  mutate(customer_no = factor(match(Survey.ResponseID,
+                                    unique(Survey.ResponseID))))
+```
+
+
+```{r}
+amazon_purchases <- amazon_purchases |>
+  mutate(order_price = Purchase.Price.Per.Unit * Quantity)
+```
+
+
+```{r}
+amazon_purchases <- amazon_purchases |>
+  mutate(Order.Date = as.Date(Order.Date, format = "%Y-%m-%d"),
+         year = as.integer(format(Order.Date, "%Y")))
+```
+
+
+```{r}
+amazon_purchases <- amazon_purchases |>
+  filter(year != "2024")
+```
+
+
+```{r}
+amazon_purchases <- amazon_purchases |>
+  mutate(Order.Date = as.Date(Order.Date),
+         covid_period = case_when(
+           Order.Date < as.Date("2020-03-01") ~ "Pre-COVID",
+           Order.Date >= as.Date("2020-03-01") &
+             Order.Date < as.Date("2022-01-01") ~ "COVID",
+           Order.Date >= as.Date("2022-01-01") ~ "Post-COVID"))
+```
+
+
+```{r}
+custom_theme <- theme(axis.text = element_text(size = 14, face = "bold"),
+                      legend.text = element_text(size = 14, face = "bold"),
+                      axis.title = element_text(size = 14, face = "bold"),
+                      legend.title = element_text(size = 14, face = "bold"))
+```
+
+
+```{r}
+state_data <- amazon_purchases |>
+  filter(order_price <= 200,
+         Q.demos.gender %in% c("Male", "Female")) |>
+  mutate(covid_period = factor(covid_period),
+         covid_period = fct_relevel(covid_period,
+                                    c("Pre-COVID", "COVID", "Post-COVID"))) |>
+  group_by(Shipping.Address.State) |>
+  summarize(order_count = n(), avg_price = mean(order_price),
+            .groups = "drop") |>
+  filter(Shipping.Address.State != "")
+
+state_map <- map_data("state")
+
+state_abbr_to_name <- data.frame(state_abbr = state.abb,
+                                 state_name = tolower(state.name))
+
+state_data <- state_data |>
+  left_join(state_abbr_to_name,
+            by = c("Shipping.Address.State" = "state_abbr")) |>
+  filter(!is.na(state_name))
+
+state_centroids <- state_map |>
+  group_by(region) |>
+  summarize(long = mean(long), lat = mean(lat)) |>
+  rename(state_name = region)
+
+state_data <- state_data |>
+  left_join(state_centroids, by = "state_name") |>
+  filter(!is.na(lat))
+```
+
+
+```{r}
+suppressMessages({
+  US <- c(left = -125, bottom = 24, right = -67, top = 49)
+  us_map <- get_stadiamap(US, zoom = 5, maptype = "stamen_toner_lite")
+})
+```
+
+```{r}
+custom_theme <- theme(axis.title = element_text(color = "gray40"),
+                      axis.text = element_text(color = "gray40"),
+                      legend.title = element_text(color = "gray40"),
+                      legend.text = element_text(color = "gray40"))
+```
+
+
+```{r}
+plot_state <- ggmap(us_map) +
+  geom_point(data = state_data, aes(x = long, y = lat,
+                                    size = order_count,
+                                    color = avg_price),
+             alpha = 0.8) +
+  scale_size(range = c(2, 8),
+             breaks = c(25000, 50000, 75000,
+                        100000, 125000, 150000),
+             labels = c("25k", "50k", "75k",
+                        "100k", "125k", "150k")) +
+  scale_color_gradient(low = "darkblue", high = "darkorange",
+                       labels = label_dollar()) +
+  labs(x = "Longitude", y = "Latitude",
+       size = " Total Orders", color = "Avg Order Price") +
+  theme_light() +
+  theme(axis.title = element_text(size = 12, hjust = 0.5),
+        legend.title = element_text(size = 12, hjust = 0.5),
+        legend.position = "right") +
+  geom_label(x = -124, y = 27,
+             label = "More orders on East coast",
+             hjust = 0, vjust = 1, size = 3.5,
+             color = "gray40", fill = "snow") +
+  custom_theme +
+  guides(size = guide_legend(override.aes = list(color = "gray40")))
+```
+
+
+```{r}
+plot_covid <- amazon_purchases |>
+  filter(order_price <= 200, Order.Date <= as.Date("2023-01-01")) |>
+  group_by(year_month = floor_date(Order.Date, "month"),
+           covid_period, Q.demos.gender) |>
+  summarize(avg_price = mean(order_price), .groups = "drop") |>
+  mutate(covid_period = factor(covid_period),
+         covid_period = fct_relevel(covid_period,
+                                    c("Pre-COVID", "COVID", "Post-COVID"))) |>
+  ggplot(aes(x = year_month, y = avg_price,
+             color = covid_period, linetype = Q.demos.gender)) +
+  geom_line(size = 0.5) +
+  geom_vline(xintercept = as.numeric(as.Date("2020-03-01")),
+             linetype = "dotted", color = "gray40") +
+  geom_vline(xintercept = as.numeric(as.Date("2022-01-01")),
+             linetype = "dotted", color = "gray40") +
+  scale_x_date(breaks = seq(as.Date("2018-01-01"), as.Date("2023-01-01"),
+                            by = "1 year"),
+               labels = format(seq(as.Date("2018-01-01"), as.Date("2023-01-01"),
+                                   by = "1 year"), "%Y")) +
+  scale_y_continuous(labels = dollar_format()) +
+  scale_color_manual(values = c("Pre-COVID" = "steelblue",
+                                "COVID" = "tomato",
+                                "Post-COVID" = "darkorchid")) +
+  scale_linetype_manual(values = c("Male" = "dashed", "Female" = "solid")) +
+  annotate("text", x = as.Date("2019-01-01"), y = Inf, label = "Pre-COVID",
+           vjust = 1.5, hjust = 0.5, size = 4, color = "steelblue") +
+  annotate("text", x = as.Date("2021-01-01"), y = Inf, label = "COVID",
+           vjust = 1.5, hjust = 0.3, size = 4, color = "tomato") +
+  annotate("text", x = as.Date("2022-09-15"), y = Inf, label = "Post-COVID",
+           vjust = 1.5, hjust = 0.6, size = 4, color = "darkorchid") +
+  labs(x = "Date", y = "Avg Order Price",
+       color = "COVID Period", linetype = "Gender") +
+  theme_light() +
+  theme(axis.title = element_text(size = 12, hjust = 0.5)) +
+  geom_text(x = as.Date("2018-01-01"), y = 50,
+            label = "Average order price similar\nacross COVID periods",
+            hjust = 0, vjust = 1, size = 3.5, color = "gray40") +
+  geom_text(x = as.Date("2018-01-01"), y = 35,
+            label = "Average order price higher\nfor males",
+            hjust = 0, vjust = 1, size = 3.5, color = "gray40") +
+  custom_theme
+```
+
+
+```{r}
+plot_income <- amazon_purchases |>
+   filter(order_price <= 200, Order.Date <= as.Date("2023-01-01"),
+          Q.demos.gender %in% c ("Male", "Female"),
+          Q.demos.income != "Prefer not to say") |>
+  mutate(Q.demos.income = fct_relevel(Q.demos.income, c("Less than $25,000",
+                                      "$25,000 - $49,999",
+                                      "$50,000 - $74,999",
+                                      "$75,000 - $99,999",
+                                      "$100,000 - $149,999",
+                                      "$150,000 or more")),
+         Q.demos.income = fct_recode(Q.demos.income,
+                                     "<$25K" = "Less than $25,000",
+                                     "$25-49.9K" = "$25,000 - $49,999",
+                                     "$50-74.9K" = "$50,000 - $74,999",
+                                     "$75-99.9K" = "$75,000 - $99,999",
+                                     "$100-149.9K" = "$100,000 - $149,999",
+                                     "$150K+" = "$150,000 or more"),
+         covid_period = factor(covid_period),
+         covid_period = fct_relevel(covid_period,
+                                    c("Pre-COVID", "COVID", "Post-COVID"))) |>
+  group_by(covid_period, Q.demos.income, Q.demos.gender) |>
+  summarize(avg_order_price = mean(order_price), .groups = "drop") |>
+  ggplot(aes(x = Q.demos.income, y = covid_period, fill = avg_order_price)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "darkblue", high = "darkorange",
+                       labels = dollar_format()) +
+  labs(x = "Income Level", y = "COVID Period", fill = "Avg Order Price") +
+  facet_wrap(~ Q.demos.gender) +
+  theme_light() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.title = element_text(size = 12, hjust = 0.5),
+        legend.title = element_text(size = 12, hjust = 0.5),
+        legend.position = "right") +
+  custom_theme +
+  geom_segment(aes(x = 1, xend = 6, y = 0.6, yend = 0.6),
+               arrow = arrow(type = "closed", length = unit(0.1, "inches")),
+               size = 0.5, color = "snow") +
+  geom_text(aes(x = 1.1, y = 0.8, label = "Avg order price increasing"),
+            color = "snow", size = 3.5, hjust = 0, vjust = 1)
+```
+
+
+```{r}
+race_data <- amazon_purchases |>
+  filter(order_price <= 200,
+         Q.demos.gender %in% c("Male", "Female"),
+         Q.demos.race %in% c("Black or African American",
+                             "White or Caucasian",
+                             "Asian")) |>
+  mutate(Q.demos.race = factor(Q.demos.race),
+         Q.demos.race = fct_recode(Q.demos.race,
+                                   "Black" = "Black or African American",
+                                   "White" = "White or Caucasian"),
+         covid_period = factor(covid_period),
+         covid_period = fct_relevel(covid_period,
+                                    c("Pre-COVID", "COVID", "Post-COVID"))) |>
+  group_by(covid_period, Q.demos.race, Q.demos.gender) |>
+  summarize(order_count = n(), .groups = "drop")
+
+max_count_female <- max(
+  race_data$order_count[race_data$Q.demos.gender == "Female"])
+max_count_male <- max(
+  race_data$order_count[race_data$Q.demos.gender == "Male"])
+
+plot_race <- ggplot(race_data, aes(x = Q.demos.race, y = order_count,
+                                   fill = covid_period)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap( ~ Q.demos.gender) +
+  scale_y_continuous(label = label_number()) +
+  scale_fill_manual(values = c("Pre-COVID" = "steelblue",
+                               "COVID" = "tomato",
+                               "Post-COVID" = "darkorchid"),
+                    name = "COVID Period") +
+  labs(x = "Race", y = "Total Orders") +
+  theme_light() +
+  theme(axis.title = element_text(size = 12, hjust = 0.5)) +
+  geom_text(data = data.frame(x = 0.7, y = max_count_female * 1,
+                              label = "Females spend more;\nexcept for Asians",
+                              Q.demos.gender = "Female"),
+            aes(x = x, y = y, label = label),
+            hjust = 0, vjust = 1, size = 3.5,
+            color = "gray40", inherit.aes = FALSE) +
+  geom_text(data = data.frame(
+    x = 0.7, y = max_count_female * 0.745,
+    label = "White people spend more;\nfor both genders",
+    Q.demos.gender = "Male"),
+    aes(
+      x = x, y = y, label = label),
+      hjust = 0, vjust = 1, size = 3.5,
+      color = "gray40", inherit.aes = FALSE) +
+  geom_text(data = data.frame(
+    x = 0.7, y = max_count_female * 1,
+    label = "Highest spending is during COVID;\nfor both genders",
+    Q.demos.gender = "Male"),
+    aes(
+      x = x, y = y, label = label),
+      hjust = 0, vjust = 1, size = 3.5,
+      color = "gray40", inherit.aes = FALSE) +
+  custom_theme
+```
+
+
+
+```{r}
+final_plot <- (plot_state + plot_covid) / (plot_income + plot_race) +
+  plot_layout(nrow = 2) +
+  plot_annotation(
+    title = "Analyzing Consumer Behavior on Amazon (2018-2023)",
+    subtitle = "Exploring trends across COVID period by
+    Location, Gender, Income & Race",
+    caption = "Data source: https://shorturl.at/uwBpM",
+    theme = theme(plot.title = element_text(size = 16, face = "bold"),
+                  plot.subtitle = element_text(size = 12),
+                  plot.caption = element_text(size = 10, hjust = 1, vjust = 0)))
+```
+
+
+```{r}
+ggsave("infographic.pdf", plot = final_plot, height = 9, width = 16)
+```
+
+
+
+
+
